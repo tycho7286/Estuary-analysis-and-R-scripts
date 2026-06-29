@@ -1,0 +1,8 @@
+.RData
+.Rhistory
+desktop.ini
+Thumbs.db
+.Ruserdata
+.Rproj.user/
+*.tmp
+*.bak
