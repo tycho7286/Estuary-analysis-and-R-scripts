@@ -1,17 +1,38 @@
 # install.packages("dplyr")
 library(dplyr)
 
-# # Windows
-# strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
-# strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
+# Windows
+strInPath <- "C:/Users/Kevin/My Drive/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
+strOutPath <- "C:/Users/Kevin/My Drive/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
 
-# Linux
-strInPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
-strOutPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
+# # Linux
+# strInPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
+# strOutPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
 
 dir.create(strOutPath, recursive = TRUE, showWarnings = FALSE)
 
 fileList <- list.files(strInPath)
+
+dfCoordinates <- data.frame(
+  estuaryname = c(
+    "Big Lagoon", "Lake Cleone", "Noyo River", "Big River", "Salmon Creek",
+    "Bodega Harbor", "Tomalas Bay", "San Gregorio Creek", "Pescadero Lagoon", "Younger Lagoon",
+    "Aptos Creek", "Devereux Slough", "Carpinteria Salt Marsh", "Santa Clara River", "Newport Bay",
+    "Mission Bay"
+  ),
+  latitude = c(
+    41.164028, 39.489500, 39.423639, 39.302750, 38.351522,
+    38.332739, 38.107972, 37.320389, 37.261028, 36.950419,
+    36.971111, 34.411864, 34.398583, 34.235100, 33.598711,
+    32.794575
+  ),
+  longitude = c(
+    -124.130667, -123.796389, -123.803556, -123.785611, -123.061917,
+    -123.058725, -122.862306, -122.400861, -122.407750, -122.067050,
+    -121.905611, -119.877183, -119.535278, -119.263219, -117.882714,
+    -117.227644
+  )
+)
 
 for (index in seq_along(fileList)) {
   
@@ -33,15 +54,16 @@ for (index in seq_along(fileList)) {
   
   dfImport$estuaryname <- estuaryName
   
+  ### Add coordinates
+  dfImport <- dfImport %>%
+    left_join(dfCoordinates, by = "estuaryname")
+  
   ### Create DateTime column
   dfImport$DateTime <- as.POSIXct(
     dfImport$Date,
     format = "%m/%d/%y %H:%M:%S %z",
     tz = "UTC"
   )
-  
-  print(class(dfImport$DateTime))
-  print(range(format(dfImport$DateTime, "%Y"), na.rm = TRUE))
   
   tempCols <- grep("Water\\.Temperature", names(dfImport), value = TRUE)
   if (length(tempCols) > 0) {
