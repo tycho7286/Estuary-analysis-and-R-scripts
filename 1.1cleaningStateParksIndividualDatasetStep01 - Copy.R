@@ -4,34 +4,22 @@ library(dplyr)
 # Windows
 strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
 strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
+strMetaPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
 # # Linux
 # strInPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
 # strOutPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
+# strMetaPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
 dir.create(strOutPath, recursive = TRUE, showWarnings = FALSE)
 
 fileList <- list.files(strInPath, pattern = "\\.csv$", ignore.case = TRUE)
 
-dfCoordinates <- data.frame(
-  estuaryname = c(
-    "Big Lagoon", "Lake Cleone", "Noyo River", "Big River", "Salmon Creek",
-    "Bodega Harbor", "Tomalas Bay", "San Gregorio Creek", "Pescadero Lagoon", "Younger Lagoon",
-    "Aptos Creek", "Devereux Slough", "Carpinteria Salt Marsh", "Santa Clara River", "Newport Bay",
-    "Mission Bay"
-  ),
-  latitude = c(
-    41.164028, 39.489500, 39.423639, 39.302750, 38.351522,
-    38.332739, 38.107972, 37.320389, 37.261028, 36.950419,
-    36.971111, 34.411864, 34.398583, 34.235100, 33.598711,
-    32.794575
-  ),
-  longitude = c(
-    -124.130667, -123.796389, -123.803556, -123.785611, -123.061917,
-    -123.058725, -122.862306, -122.400861, -122.407750, -122.067050,
-    -121.905611, -119.877183, -119.535278, -119.263219, -117.882714,
-    -117.227644
-  )
+strMetaFilename <- "stateParkMetadata.csv"
+
+dfCoordinates <- read.csv(
+  file.path(strMetaPath, strMetaFilename),
+  stringsAsFactors = FALSE
 )
 
 for (index in seq_along(fileList)) {
@@ -54,7 +42,7 @@ for (index in seq_along(fileList)) {
   
   dfImport$estuaryname <- estuaryName
   
-  ### Add coordinates
+  ### Add metadata
   dfImport <- dfImport %>%
     left_join(dfCoordinates, by = "estuaryname")
   
