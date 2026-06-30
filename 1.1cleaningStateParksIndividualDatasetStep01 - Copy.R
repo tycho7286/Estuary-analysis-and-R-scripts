@@ -2,8 +2,8 @@
 library(dplyr)
 
 # Windows
-strInPath <- "C:/Users/Kevin/My Drive/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
-strOutPath <- "C:/Users/Kevin/My Drive/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
+strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
+strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/cleanData/stateParks"
 
 # # Linux
 # strInPath <- "/mnt/internalShared/Google/School/2026Summer-BML-UCDGAP/Data/rawData/stateParks"
@@ -11,7 +11,7 @@ strOutPath <- "C:/Users/Kevin/My Drive/School/2026Summer-BML-UCDGAP/Data/cleanDa
 
 dir.create(strOutPath, recursive = TRUE, showWarnings = FALSE)
 
-fileList <- list.files(strInPath)
+fileList <- list.files(strInPath, pattern = "\\.csv$", ignore.case = TRUE)
 
 dfCoordinates <- data.frame(
   estuaryname = c(
