@@ -306,20 +306,34 @@ dfEstuaryDistanceOrder <- dfTempDistance %>%
     distanceFromMouthMeters = mean(distanceFromMouthMeters, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(distanceFromMouthMeters)
+  arrange(distanceFromMouthMeters) %>%
+  mutate(
+    estuaryDistanceLabel = paste0(
+      estuaryname,
+      "\n",
+      format(round(distanceFromMouthMeters), big.mark = ","),
+      " m"
+    )
+  )
 
 listEstuaryDistanceOrder <- dfEstuaryDistanceOrder$estuaryname
+listEstuaryDistanceLabels <- dfEstuaryDistanceOrder$estuaryDistanceLabel
 
 dfTempDistance <- dfTempDistance %>%
+  left_join(
+    dfEstuaryDistanceOrder %>%
+      select(estuaryname, estuaryDistanceLabel),
+    by = "estuaryname"
+  ) %>%
   mutate(
     estuarynameOrdered = factor(
-      estuaryname,
-      levels = listEstuaryDistanceOrder
+      estuaryDistanceLabel,
+      levels = listEstuaryDistanceLabels
     )
   )
 
 cat("The following", length(listEstuaryDistanceOrder), "State Parks estuaries will be processed by distance from mouth:\n")
-print(listEstuaryDistanceOrder)
+print(dfEstuaryDistanceOrder[, c("estuaryname", "distanceFromMouthMeters")])
 
 ############################################################
 ### Five-Number Summary Waterfall Plots by Distance from Mouth
