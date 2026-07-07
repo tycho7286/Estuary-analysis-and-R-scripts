@@ -256,9 +256,10 @@ writeCoordinateClusterKML <- function(dfOutput, strFullKMLWriteName) {
         row <- dfStation[i, ]
         
         placemarkName <- paste0(
-          "Station ",
+          row$estuaryname,
+          ", Station ",
           row$stationno,
-          " Cluster ",
+          ", Cluster ",
           row$dbscanCluster
         )
         
