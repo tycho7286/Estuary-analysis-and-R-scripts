@@ -12,15 +12,26 @@ library(dplyr)
 strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
-strReadFilename <- "metadataEMPA.csv"
-strWriteFilename <- "empaStationUniqueCoordinateEntries.csv"
+strReadFilename <- "empa_logger_meta_9cd4_881c_2f2a.csv"
+
+strUniqueCoordinateWriteFilename <- "empaStationUniqueCoordinateEntries.csv"
+strMembershipWriteFilename <- "empaStationCoordinateMembership.csv"
 
 strFullReadName <- file.path(strInPath, strReadFilename)
-strFullWriteName <- file.path(strOutPath, strWriteFilename)
+strFullUniqueCoordinateWriteName <- file.path(strOutPath, strUniqueCoordinateWriteFilename)
+strFullMembershipWriteName <- file.path(strOutPath, strMembershipWriteFilename)
 
 ############################################################
 ### Helper Functions
 ############################################################
+
+### Clean station numbers so 1 and 1.0 match correctly.
+cleanStationNo <- function(stationNo) {
+  stationNo <- as.character(stationNo)
+  stationNo <- trimws(stationNo)
+  stationNo <- sub("\\.0$", "", stationNo)
+  stationNo
+}
 
 ### Calculate distance in meters between two latitude longitude points.
 calculateDistanceMeters <- function(latOne, lonOne, latTwo, lonTwo) {
@@ -44,25 +55,41 @@ calculateDistanceMeters <- function(latOne, lonOne, latTwo, lonTwo) {
 }
 
 ############################################################
-### Load Coordinate Summary
+### Load Metadata
 ############################################################
 
-dfCoordinates <- read.csv(strFullReadName, stringsAsFactors = FALSE)
+dfMetadata <- read.csv(strFullReadName, stringsAsFactors = FALSE)
 
-dfCoordinates <- dfCoordinates %>%
+############################################################
+### Clean Metadata Fields
+############################################################
+
+dfMetadata <- dfMetadata %>%
   mutate(
     estuaryname = trimws(as.character(estuaryname)),
-    stationno = trimws(as.character(stationno)),
+    stationno = cleanStationNo(stationno),
     profile = trimws(as.character(profile)),
+    sensorid = trimws(as.character(sensorid)),
+    sensortype = trimws(as.character(sensortype)),
     latitude = suppressWarnings(as.numeric(latitude)),
-    longitude = suppressWarnings(as.numeric(longitude))
+    longitude = suppressWarnings(as.numeric(longitude)),
+    coordinateStartDate = as.POSIXct(
+      time,
+      format = "%Y-%m-%dT%H:%M:%SZ",
+      tz = "UTC"
+    ),
+    coordinateEndDate = as.POSIXct(
+      time_end,
+      format = "%Y-%m-%dT%H:%M:%SZ",
+      tz = "UTC"
+    )
   )
 
 ############################################################
-### Split Out Unique Coordinate Entries
+### Keep Valid Coordinate Metadata
 ############################################################
 
-dfUniqueCoordinates <- dfCoordinates %>%
+dfValidMetadata <- dfMetadata %>%
   filter(
     !is.na(estuaryname),
     estuaryname != "",
@@ -70,13 +97,18 @@ dfUniqueCoordinates <- dfCoordinates %>%
     stationno != "",
     !is.na(latitude),
     !is.na(longitude)
-  ) %>%
+  )
+
+############################################################
+### Create Unique Coordinate Entries
+############################################################
+
+dfUniqueCoordinates <- dfValidMetadata %>%
   distinct(
     estuaryname,
     stationno,
     latitude,
-    longitude,
-    .keep_all = TRUE
+    longitude
   ) %>%
   group_by(estuaryname, stationno) %>%
   arrange(latitude, longitude, .by_group = TRUE) %>%
@@ -86,13 +118,7 @@ dfUniqueCoordinates <- dfCoordinates %>%
     stationCenterLatitude = mean(latitude, na.rm = TRUE),
     stationCenterLongitude = mean(longitude, na.rm = TRUE)
   ) %>%
-  ungroup()
-
-############################################################
-### Add Distance From Common Center
-############################################################
-
-dfUniqueCoordinates <- dfUniqueCoordinates %>%
+  ungroup() %>%
   mutate(
     distanceFromStationCenterMeters = calculateDistanceMeters(
       latitude,
@@ -118,12 +144,47 @@ dfUniqueCoordinates <- dfUniqueCoordinates %>%
   )
 
 ############################################################
-### Write CSV
+### Create Coordinate Membership Table
 ############################################################
 
-write.csv(dfUniqueCoordinates, strFullWriteName, row.names = FALSE)
+dfCoordinateMembership <- dfValidMetadata %>%
+  left_join(
+    dfUniqueCoordinates %>%
+      select(
+        estuaryname,
+        stationno,
+        latitude,
+        longitude,
+        uniqueCoordinateEntry,
+        numberUniqueCoordinateEntries,
+        stationCenterLatitude,
+        stationCenterLongitude,
+        distanceFromStationCenterMeters,
+        maxDistanceFromStationCenterMeters
+      ),
+    by = c("estuaryname", "stationno", "latitude", "longitude")
+  ) %>%
+  arrange(
+    estuaryname,
+    suppressWarnings(as.numeric(stationno)),
+    stationno,
+    uniqueCoordinateEntry,
+    profile,
+    sensorid,
+    coordinateStartDate
+  )
 
-cat("Wrote file to:", strFullWriteName, "\n")
-cat("Rows written:", nrow(dfUniqueCoordinates), "\n")
+############################################################
+### Write CSV Files
+############################################################
+
+write.csv(dfUniqueCoordinates, strFullUniqueCoordinateWriteName, row.names = FALSE)
+write.csv(dfCoordinateMembership, strFullMembershipWriteName, row.names = FALSE)
+
+cat("Wrote unique coordinate file to:", strFullUniqueCoordinateWriteName, "\n")
+cat("Unique coordinate rows written:", nrow(dfUniqueCoordinates), "\n\n")
+
+cat("Wrote coordinate membership file to:", strFullMembershipWriteName, "\n")
+cat("Membership rows written:", nrow(dfCoordinateMembership), "\n")
 
 gc()
