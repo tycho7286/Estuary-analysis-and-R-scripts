@@ -9,22 +9,26 @@ library(dplyr)
 library(dbscan)
 
 ############################################################
-### File Paths and Settings
+### File Paths
 ############################################################
 
 strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
-strReadFilename <- "empaStationUniqueCoordinateEntries.csv"
-
-strCompleteWriteFilename <- "empaStationUniqueCoordinateDBSCANComplete.csv"
-strReviewWriteFilename <- "empaStationUniqueCoordinateDBSCANReviewOnly.csv"
+strReadFilename <- "empaStationCoordinateEntries.csv"
+strWriteFilename <- "empaStationCoordinateClusters.csv"
 
 strFullReadName <- file.path(strInPath, strReadFilename)
-strFullCompleteWriteName <- file.path(strOutPath, strCompleteWriteFilename)
-strFullReviewWriteName <- file.path(strOutPath, strReviewWriteFilename)
+strFullWriteName <- file.path(strOutPath, strWriteFilename)
 
+############################################################
+### DBSCAN Settings
+############################################################
+
+### Maximum distance between neighboring points in meters.
 intDBSCANDistanceMeters <- 25
+
+### Minimum number of points required to form a cluster.
 intDBSCANMinPoints <- 2
 
 ############################################################
@@ -52,7 +56,7 @@ calculateDistanceMeters <- function(latOne, lonOne, latTwo, lonTwo) {
   earthRadiusMeters * c
 }
 
-### Calculate maximum distance between any two points.
+### Calculate maximum distance between any two coordinate points.
 calculateClusterDiameterMeters <- function(latitude, longitude) {
   if (length(latitude) <= 1) {
     return(0)
@@ -78,23 +82,32 @@ calculateClusterDiameterMeters <- function(latitude, longitude) {
   maxDistance
 }
 
+### Convert latitude and longitude to approximate local meter coordinates.
+createInPoints <- function(dfStation) {
+  meanLatitude <- mean(dfStation$latitude, na.rm = TRUE)
+  
+  inPoints <- data.frame(
+    x = dfStation$longitude * 111320 * cos(meanLatitude * pi / 180),
+    y = dfStation$latitude * 110540
+  )
+  
+  inPoints
+}
+
 ### Run DBSCAN within one estuary station pair.
 runDBSCANForStation <- function(dfStation) {
+  dfStation <- dfStation %>%
+    arrange(latitude, longitude)
+  
   if (nrow(dfStation) < intDBSCANMinPoints) {
     dfStation$dbscanCluster <- 0
     return(dfStation)
   }
   
-  meanLatitude <- mean(dfStation$latitude, na.rm = TRUE)
-  
-  dfMeters <- dfStation %>%
-    mutate(
-      xMeters = longitude * 111320 * cos(meanLatitude * pi / 180),
-      yMeters = latitude * 110540
-    )
+  inPoints <- createInPoints(dfStation)
   
   dbscanResult <- dbscan(
-    dfMeters[, c("xMeters", "yMeters")],
+    inPoints,
     eps = intDBSCANDistanceMeters,
     minPts = intDBSCANMinPoints
   )
@@ -105,7 +118,7 @@ runDBSCANForStation <- function(dfStation) {
 }
 
 ############################################################
-### Load Unique Coordinate Entries
+### Load Coordinate Entries
 ############################################################
 
 dfCoordinates <- read.csv(strFullReadName, stringsAsFactors = FALSE)
@@ -114,9 +127,47 @@ dfCoordinates <- dfCoordinates %>%
   mutate(
     estuaryname = trimws(as.character(estuaryname)),
     stationno = trimws(as.character(stationno)),
-    profile = trimws(as.character(profile)),
     latitude = suppressWarnings(as.numeric(latitude)),
     longitude = suppressWarnings(as.numeric(longitude))
+  )
+
+if ("profile" %in% names(dfCoordinates)) {
+  dfCoordinates$profile <- trimws(as.character(dfCoordinates$profile))
+}
+
+############################################################
+### Check Required Fields
+############################################################
+
+requiredFields <- c(
+  "estuaryname",
+  "stationno",
+  "latitude",
+  "longitude",
+  "uniqueCoordinateEntry"
+)
+
+missingFields <- setdiff(requiredFields, names(dfCoordinates))
+
+if (length(missingFields) > 0) {
+  stop(
+    "Missing required fields in coordinate entry file: ",
+    paste(missingFields, collapse = ", ")
+  )
+}
+
+############################################################
+### Filter Valid Coordinate Entries
+############################################################
+
+dfCoordinates <- dfCoordinates %>%
+  filter(
+    !is.na(estuaryname),
+    estuaryname != "",
+    !is.na(stationno),
+    stationno != "",
+    !is.na(latitude),
+    !is.na(longitude)
   )
 
 ############################################################
@@ -129,7 +180,7 @@ dfClustered <- dfCoordinates %>%
   ungroup()
 
 ############################################################
-### Summarize DBSCAN Clusters
+### Summarize Non-Noise DBSCAN Clusters
 ############################################################
 
 dfClusterSummary <- dfClustered %>%
@@ -146,12 +197,17 @@ dfClusterSummary <- dfClustered %>%
     .groups = "drop"
   )
 
+############################################################
+### Add Cluster Summary Fields
+############################################################
+
 dfOutput <- dfClustered %>%
   left_join(
     dfClusterSummary,
     by = c("estuaryname", "stationno", "dbscanCluster")
   ) %>%
   mutate(
+    dbscanIsNoise = dbscanCluster == 0,
     distanceFromDBSCANClusterCenterMeters = ifelse(
       dbscanCluster > 0,
       calculateDistanceMeters(
@@ -180,17 +236,22 @@ dfOutput <- dfClustered %>%
 dfOutput <- dfOutput %>%
   group_by(estuaryname, stationno) %>%
   mutate(
-    numberUniqueCoordinateEntries = n(),
-    numberDBSCANClusters = n_distinct(dbscanCluster[dbscanCluster > 0]),
+    numberCoordinateClusters = n_distinct(dbscanCluster[dbscanCluster > 0]),
     numberNoisePoints = sum(dbscanCluster == 0),
-    stationPointClusterDiameterMeters = calculateClusterDiameterMeters(
+    stationCoordinateDiameterMeters = calculateClusterDiameterMeters(
       latitude,
       longitude
     )
   ) %>%
-  ungroup() %>%
+  ungroup()
+
+############################################################
+### Arrange Output
+############################################################
+
+dfOutput <- dfOutput %>%
   arrange(
-    desc(stationPointClusterDiameterMeters),
+    desc(stationCoordinateDiameterMeters),
     estuaryname,
     suppressWarnings(as.numeric(stationno)),
     stationno,
@@ -199,28 +260,13 @@ dfOutput <- dfOutput %>%
   )
 
 ############################################################
-### Create Review Only File
+### Write CSV
 ############################################################
 
-dfReview <- dfOutput %>%
-  filter(
-    numberUniqueCoordinateEntries > 1,
-    numberDBSCANClusters > 1 | numberNoisePoints > 0
-  )
+write.csv(dfOutput, strFullWriteName, row.names = FALSE)
 
-############################################################
-### Write CSV Files
-############################################################
-
-write.csv(dfOutput, strFullCompleteWriteName, row.names = FALSE)
-write.csv(dfReview, strFullReviewWriteName, row.names = FALSE)
-
-cat("Wrote complete DBSCAN file to:", strFullCompleteWriteName, "\n")
-cat("Rows written:", nrow(dfOutput), "\n\n")
-
-cat("Wrote review only DBSCAN file to:", strFullReviewWriteName, "\n")
-cat("Rows written:", nrow(dfReview), "\n\n")
-
+cat("Wrote coordinate cluster file to:", strFullWriteName, "\n")
+cat("Rows written:", nrow(dfOutput), "\n")
 cat("DBSCAN distance in meters:", intDBSCANDistanceMeters, "\n")
 cat("DBSCAN minimum points:", intDBSCANMinPoints, "\n")
 
