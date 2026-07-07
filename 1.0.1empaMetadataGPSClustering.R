@@ -15,7 +15,7 @@ library(dbscan)
 strInPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 strOutPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
-strReadFilename <- "empaStationCoordinateEntries.csv"
+strReadFilename <- "empaStationUniqueCoordinateEntries.csv"
 strWriteFilename <- "empaStationCoordinateClusters.csv"
 
 strFullReadName <- file.path(strInPath, strReadFilename)
