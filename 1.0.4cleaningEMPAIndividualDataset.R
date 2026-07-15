@@ -21,9 +21,28 @@ strMetadataPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
 strGPSLookupFilename <- "empaSensorGPSLookup.csv"
 strGPSMatchSummaryFilename <- "empaCleaningGPSMatchSummary.csv"
+strGPSDuplicateMatchesFilename <- "empaCleaningGPSDuplicateMatches.csv"
+strGPSUnmatchedRowsFilename <- "empaCleaningGPSUnmatchedRows.csv"
+strGPSStatisticsFilename <- "empaCleaningGPSStatistics.csv"
 
 strFullGPSLookupName <- file.path(strMetadataPath, strGPSLookupFilename)
 strFullGPSMatchSummaryName <- file.path(strMetadataPath, strGPSMatchSummaryFilename)
+strFullGPSDuplicateMatchesName <- file.path(strMetadataPath, strGPSDuplicateMatchesFilename)
+strFullGPSUnmatchedRowsName <- file.path(strMetadataPath, strGPSUnmatchedRowsFilename)
+strFullGPSStatisticsName <- file.path(strMetadataPath, strGPSStatisticsFilename)
+
+############################################################
+### Script Settings
+############################################################
+
+strCleaningVersion <- "1.0"
+strCleaningCreatedAt <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
+
+### Set to TRUE to write every unmatched row. This can create a large CSV.
+bolWriteUnmatchedRows <- FALSE
+
+### Set to TRUE to write every duplicate match row. This can create a large CSV.
+bolWriteDuplicateMatchRows <- FALSE
 
 ############################################################
 ### Helper Functions
@@ -51,35 +70,35 @@ blankToNA <- function(x) {
 parseEMPATime <- function(timeValue) {
   timeValue <- blankToNA(timeValue)
   outputTime <- as.POSIXct(rep(NA_character_, length(timeValue)), tz = "UTC")
-
+  
   idxISO <- !is.na(timeValue) & grepl("T", timeValue)
   outputTime[idxISO] <- as.POSIXct(
     timeValue[idxISO],
     format = "%Y-%m-%dT%H:%M:%SZ",
     tz = "UTC"
   )
-
+  
   idxSpace <- !is.na(timeValue) & is.na(outputTime)
   outputTime[idxSpace] <- as.POSIXct(
     timeValue[idxSpace],
     format = "%Y-%m-%d %H:%M:%S",
     tz = "UTC"
   )
-
+  
   idxDateOnly <- !is.na(timeValue) & is.na(outputTime)
   outputTime[idxDateOnly] <- as.POSIXct(
     timeValue[idxDateOnly],
     format = "%Y-%m-%d",
     tz = "UTC"
   )
-
+  
   outputTime
 }
 
 ### Stop with a clear message if required fields are missing.
 checkRequiredFields <- function(dfInput, requiredFields, dfName) {
   missingFields <- setdiff(requiredFields, names(dfInput))
-
+  
   if (length(missingFields) > 0) {
     stop(
       dfName,
@@ -87,6 +106,13 @@ checkRequiredFields <- function(dfInput, requiredFields, dfName) {
       paste(missingFields, collapse = ", ")
     )
   }
+}
+
+### Collapse unique values into one readable diagnostic string.
+collapseUniqueValues <- function(x) {
+  x <- unique(as.character(x))
+  x <- x[!is.na(x) & x != ""]
+  paste(x, collapse = " | ")
 }
 
 ### Add empty GPS output fields to a data frame.
@@ -110,7 +136,7 @@ addEmptyGPSFields <- function(dfImport) {
   dfImport$gpsDBSCANClusterPointCount <- NA_real_
   dfImport$gpsStationCoordinateDiameterMeters <- NA_real_
   dfImport$gpsReviewNotes <- NA_character_
-
+  dfImport$gpsLookupVersion <- NA_character_
   dfImport
 }
 
@@ -137,14 +163,47 @@ assignLookupRow <- function(dfImport, idxAssign, lookupRow) {
   dfImport$gpsStationCoordinateDiameterMeters[idxAssign] <-
     lookupRow$stationCoordinateDiameterMeters
   dfImport$gpsReviewNotes[idxAssign] <- lookupRow$gpsReviewNotes
-
+  dfImport$gpsLookupVersion[idxAssign] <- lookupRow$gpsLookupVersion
+  
   dfImport
 }
 
-### Add GPS fields using sensor, profile, station, estuary, and DateTime range.
-addGPSFieldsToImport <- function(dfImport, dfGPSLookup) {
-  dfImport <- addEmptyGPSFields(dfImport)
+### Build a compact duplicate diagnostic row.
+makeDuplicateDiagnostic <- function(dfImport, rowIndex, dfMatches, fileName) {
+  data.frame(
+    fileName = fileName,
+    estuaryname = dfImport$estuaryname[rowIndex],
+    stationno = dfImport$stationno[rowIndex],
+    sensorid = dfImport$sensorid[rowIndex],
+    profile = dfImport$profile[rowIndex],
+    DateTime = dfImport$DateTime[rowIndex],
+    numberMatches = nrow(dfMatches),
+    matchingUniqueCoordinateEntries = collapseUniqueValues(
+      dfMatches$uniqueCoordinateEntry
+    ),
+    matchingCoordinateGroups = collapseUniqueValues(
+      dfMatches$finalCoordinateGroup
+    ),
+    matchingCombineToSinglePins = collapseUniqueValues(
+      dfMatches$combineToSinglePin
+    ),
+    matchingFinalLatitudes = collapseUniqueValues(dfMatches$finalLatitude),
+    matchingFinalLongitudes = collapseUniqueValues(dfMatches$finalLongitude),
+    matchingStartDates = collapseUniqueValues(dfMatches$gpsStartDate),
+    matchingEndDates = collapseUniqueValues(dfMatches$gpsEndDate),
+    matchingReviewNotes = collapseUniqueValues(dfMatches$gpsReviewNotes),
+    allMatchesSameFinalCoordinate = n_distinct(
+      paste(dfMatches$finalLatitude, dfMatches$finalLongitude, sep = ",")
+    ) == 1,
+    stringsAsFactors = FALSE
+  )
+}
 
+### Add GPS fields using lookup rows and vectorized DateTime range matching.
+addGPSFieldsToImport <- function(dfImport, dfGPSLookup, lookupList, fileName) {
+  dfImport <- addEmptyGPSFields(dfImport)
+  dfDuplicateDiagnostics <- list()
+  
   dfImport$gpsMatchCount <- 0L
   dfImport$gpsMatchKey <- paste(
     dfImport$estuaryname,
@@ -153,26 +212,38 @@ addGPSFieldsToImport <- function(dfImport, dfGPSLookup) {
     dfImport$profile,
     sep = "||"
   )
-
-  lookupKeys <- unique(
-    paste(
-      dfGPSLookup$estuaryname,
-      dfGPSLookup$stationno,
-      dfGPSLookup$sensorid,
-      dfGPSLookup$profile,
-      sep = "||"
-    )
-  )
-
+  
+  lookupKeys <- names(lookupList)
   dfImport$gpsHasSensorProfileLookup <- dfImport$gpsMatchKey %in% lookupKeys
-
-  for (lookupIndex in seq_len(nrow(dfGPSLookup))) {
-    lookupRow <- dfGPSLookup[lookupIndex, ]
-
-    idxMatch <- dfImport$estuaryname == lookupRow$estuaryname &
-      dfImport$stationno == lookupRow$stationno &
-      dfImport$sensorid == lookupRow$sensorid &
-      dfImport$profile == lookupRow$profile &
+  keysInThisFile <- unique(dfImport$gpsMatchKey[dfImport$gpsHasSensorProfileLookup])
+  
+  dfLookupForFile <- dfGPSLookup[dfGPSLookup$lookupKey %in% keysInThisFile, ]
+  
+  cat(
+    "Lookup rows used for this file:",
+    nrow(dfLookupForFile),
+    "of",
+    nrow(dfGPSLookup),
+    "\n"
+  )
+  
+  if (nrow(dfLookupForFile) == 0) {
+    dfImport$gpsMatchStatus <- case_when(
+      is.na(dfImport$DateTime) ~ "missing_observation_datetime",
+      TRUE ~ "no_sensor_profile_match"
+    )
+    dfImport$gpsMatchKey <- NULL
+    dfImport$gpsHasSensorProfileLookup <- NULL
+    return(list(
+      dfImport = dfImport,
+      dfDuplicateDiagnostics = bind_rows(dfDuplicateDiagnostics)
+    ))
+  }
+  
+  for (lookupIndex in seq_len(nrow(dfLookupForFile))) {
+    lookupRow <- dfLookupForFile[lookupIndex, ]
+    
+    idxMatch <- dfImport$gpsMatchKey == lookupRow$lookupKey &
       !is.na(dfImport$DateTime) &
       !is.na(lookupRow$gpsStartDate) &
       dfImport$DateTime >= lookupRow$gpsStartDate &
@@ -180,22 +251,23 @@ addGPSFieldsToImport <- function(dfImport, dfGPSLookup) {
         is.na(lookupRow$gpsEndDate) |
           dfImport$DateTime <= lookupRow$gpsEndDate
       )
-
+    
     idxMatch[is.na(idxMatch)] <- FALSE
-
+    
     if (!any(idxMatch)) {
       next
     }
-
-    dfImport$gpsMatchCount[idxMatch] <- dfImport$gpsMatchCount[idxMatch] + 1L
-
+    
+    dfImport$gpsMatchCount[idxMatch] <-
+      dfImport$gpsMatchCount[idxMatch] + 1L
+    
     idxFirstMatch <- idxMatch & dfImport$gpsMatchCount == 1L
-
+    
     if (any(idxFirstMatch)) {
       dfImport <- assignLookupRow(dfImport, idxFirstMatch, lookupRow)
     }
   }
-
+  
   dfImport$gpsMatchStatus <- case_when(
     is.na(dfImport$DateTime) ~ "missing_observation_datetime",
     dfImport$gpsMatchCount == 1L ~ "matched",
@@ -203,11 +275,38 @@ addGPSFieldsToImport <- function(dfImport, dfGPSLookup) {
     !dfImport$gpsHasSensorProfileLookup ~ "no_sensor_profile_match",
     TRUE ~ "no_date_range_match"
   )
-
+  
+  ### Optional duplicate diagnostics. This is intentionally separate and off by default.
+  if (bolWriteDuplicateMatchRows && any(dfImport$gpsMatchStatus == "duplicate_date_range_match")) {
+    duplicateRows <- which(dfImport$gpsMatchStatus == "duplicate_date_range_match")
+    
+    for (rowIndex in duplicateRows) {
+      currentDateTime <- dfImport$DateTime[rowIndex]
+      currentKey <- dfImport$gpsMatchKey[rowIndex]
+      dfCandidate <- lookupList[[currentKey]]
+      
+      idxDateMatch <- !is.na(dfCandidate$gpsStartDate) &
+        dfCandidate$gpsStartDate <= currentDateTime &
+        (
+          is.na(dfCandidate$gpsEndDate) |
+            dfCandidate$gpsEndDate >= currentDateTime
+        )
+      
+      idxDateMatch[is.na(idxDateMatch)] <- FALSE
+      dfMatches <- dfCandidate[idxDateMatch, ]
+      
+      dfDuplicateDiagnostics[[length(dfDuplicateDiagnostics) + 1]] <-
+        makeDuplicateDiagnostic(dfImport, rowIndex, dfMatches, fileName)
+    }
+  }
+  
   dfImport$gpsMatchKey <- NULL
   dfImport$gpsHasSensorProfileLookup <- NULL
-
-  dfImport
+  
+  list(
+    dfImport = dfImport,
+    dfDuplicateDiagnostics = bind_rows(dfDuplicateDiagnostics)
+  )
 }
 
 ############################################################
@@ -217,6 +316,7 @@ addGPSFieldsToImport <- function(dfImport, dfGPSLookup) {
 dfGPSLookup <- read.csv(strFullGPSLookupName, stringsAsFactors = FALSE)
 
 requiredGPSLookupFields <- c(
+  "gpsLookupVersion",
   "estuaryname",
   "stationno",
   "sensorid",
@@ -248,6 +348,7 @@ checkRequiredFields(
 
 dfGPSLookup <- dfGPSLookup %>%
   mutate(
+    gpsLookupVersion = trimws(as.character(gpsLookupVersion)),
     estuaryname = trimws(as.character(estuaryname)),
     stationno = cleanStationNo(stationno),
     sensorid = trimws(as.character(sensorid)),
@@ -292,6 +393,20 @@ dfGPSLookup <- dfGPSLookup %>%
   )
 
 ############################################################
+### Build GPS Lookup Index
+############################################################
+
+dfGPSLookup$lookupKey <- paste(
+  dfGPSLookup$estuaryname,
+  dfGPSLookup$stationno,
+  dfGPSLookup$sensorid,
+  dfGPSLookup$profile,
+  sep = "||"
+)
+
+lookupList <- split(dfGPSLookup, dfGPSLookup$lookupKey)
+
+############################################################
 ### Get File Names
 ############################################################
 
@@ -299,6 +414,8 @@ dir.create(strOutPath, recursive = TRUE, showWarnings = FALSE)
 
 fileList <- list.files(strInPath, pattern = "\\.csv$", ignore.case = TRUE)
 gpsMatchSummaryList <- list()
+gpsDuplicateDiagnosticsList <- list()
+gpsUnmatchedRowsList <- list()
 index <- 0
 
 ############################################################
@@ -308,7 +425,7 @@ index <- 0
 for (i in fileList) {
   index <- index + 1
   strFullName <- file.path(strInPath, i)
-
+  
   dfImport <- read.csv(strFullName, stringsAsFactors = FALSE) %>%
     mutate(
       sensorid = trimws(as.character(sensorid)),
@@ -317,14 +434,14 @@ for (i in fileList) {
       estuaryname = trimws(as.character(estuaryname)),
       sensortype = trimws(as.character(sensortype))
     )
-
+  
   estuaryName <- paste0("estuary-", substr(i, start = 1, stop = 7))
   fullWriteName <- file.path(strOutPath, paste0(estuaryName, "CleaningStep01.rds"))
-
+  
   ############################################################
   ### Remove Columns
   ############################################################
-
+  
   dfImport <- dfImport %>%
     select(
       -any_of(c(
@@ -343,38 +460,45 @@ for (i in fileList) {
         "sensorlocation"
       ))
     )
-
+  
   ############################################################
   ### Remove Rows With No Sensor or Unknown Sensor
   ############################################################
-
+  
   dfImport <- dfImport[dfImport$sensortype != "", ]
   dfImport <- dfImport[dfImport$sensortype != "unknown", ]
-
+  
   ############################################################
   ### Make DateTime POSIX
   ############################################################
-
+  
   dateTimeFromTimeUtc <- parseEMPATime(dfImport$time_utc)
-
+  
   badTimeUtc <- is.na(dateTimeFromTimeUtc) |
     as.numeric(format(dateTimeFromTimeUtc, "%Y")) < 1000
-
+  
   dateTimeFromTime <- parseEMPATime(dfImport$time)
-
+  
   dfImport$DateTime <- dateTimeFromTimeUtc
   dfImport$DateTime[badTimeUtc] <- dateTimeFromTime[badTimeUtc]
-
+  
   ############################################################
   ### Add Clustered GPS Fields
   ############################################################
-
-  dfImport <- addGPSFieldsToImport(dfImport, dfGPSLookup)
-
+  
+  cat("Starting GPS match for:", i, "rows:", nrow(dfImport), "\n")
+  gpsResult <- addGPSFieldsToImport(dfImport, dfGPSLookup, lookupList, i)
+  cat("Finished GPS match for:", i, "\n")
+  dfImport <- gpsResult$dfImport
+  
+  if (nrow(gpsResult$dfDuplicateDiagnostics) > 0) {
+    gpsDuplicateDiagnosticsList[[i]] <- gpsResult$dfDuplicateDiagnostics
+  }
+  
   ############################################################
   ### Create GPS Match Summary
   ############################################################
-
+  
   totalRows <- nrow(dfImport)
   gpsMatchedRows <- sum(dfImport$gpsMatchStatus == "matched", na.rm = TRUE)
   gpsDuplicateMatchRows <- sum(
@@ -396,8 +520,10 @@ for (i in fileList) {
   gpsUnmatchedRows <- noSensorProfileMatchRows +
     noDateRangeMatchRows +
     missingObservationDateTimeRows
-
+  
   gpsMatchSummaryList[[i]] <- data.frame(
+    cleaningVersion = strCleaningVersion,
+    cleaningCreatedAt = strCleaningCreatedAt,
     fileName = i,
     outputName = basename(fullWriteName),
     estuaryFileName = estuaryName,
@@ -408,13 +534,44 @@ for (i in fileList) {
     noSensorProfileMatchRows = noSensorProfileMatchRows,
     noDateRangeMatchRows = noDateRangeMatchRows,
     missingObservationDateTimeRows = missingObservationDateTimeRows,
-    gpsMatchRate = ifelse(totalRows > 0, gpsMatchedRows / totalRows, NA_real_)
+    gpsMatchRate = ifelse(totalRows > 0, gpsMatchedRows / totalRows, NA_real_),
+    stringsAsFactors = FALSE
   )
-
+  
+  ############################################################
+  ### Store Unmatched Row Diagnostics
+  ############################################################
+  
+  if (bolWriteUnmatchedRows) {
+    dfUnmatched <- dfImport %>%
+      filter(
+        gpsMatchStatus %in% c(
+          "no_sensor_profile_match",
+          "no_date_range_match",
+          "missing_observation_datetime"
+        )
+      ) %>%
+      select(
+        estuaryname,
+        stationno,
+        sensorid,
+        profile,
+        DateTime,
+        gpsMatchStatus,
+        gpsMatchCount,
+        everything()
+      ) %>%
+      mutate(sourceFileName = i, .before = estuaryname)
+    
+    if (nrow(dfUnmatched) > 0) {
+      gpsUnmatchedRowsList[[i]] <- dfUnmatched
+    }
+  }
+  
   ############################################################
   ### Save Cleaned File
   ############################################################
-
+  
   print(range(format(dfImport$DateTime, "%Y"), na.rm = TRUE))
   cat(
     index,
@@ -427,23 +584,56 @@ for (i in fileList) {
     gpsDuplicateMatchRows,
     "\n"
   )
-
+  
+  cat("Saving file to:", fullWriteName, "\n")
   saveRDS(dfImport, fullWriteName)
+  cat("Finished saving:", fullWriteName, "\n")
 }
 
+
 ############################################################
-### Write GPS Match Summary
+### Write GPS Diagnostics
 ############################################################
 
 dfGPSMatchSummary <- bind_rows(gpsMatchSummaryList)
+dfGPSDuplicateMatches <- bind_rows(gpsDuplicateDiagnosticsList)
+dfGPSUnmatchedRows <- bind_rows(gpsUnmatchedRowsList)
+
 write.csv(dfGPSMatchSummary, strFullGPSMatchSummaryName, row.names = FALSE)
+write.csv(dfGPSDuplicateMatches, strFullGPSDuplicateMatchesName, row.names = FALSE)
+write.csv(dfGPSUnmatchedRows, strFullGPSUnmatchedRowsName, row.names = FALSE)
+
+dfGPSStatistics <- data.frame(
+  cleaningVersion = strCleaningVersion,
+  cleaningCreatedAt = strCleaningCreatedAt,
+  filesProcessed = length(fileList),
+  lookupRows = nrow(dfGPSLookup),
+  lookupKeys = length(lookupList),
+  totalRowsProcessed = sum(dfGPSMatchSummary$totalRows),
+  totalGPSMatchedRows = sum(dfGPSMatchSummary$gpsMatchedRows),
+  totalGPSUnmatchedRows = sum(dfGPSMatchSummary$gpsUnmatchedRows),
+  totalGPSDuplicateMatchRows = sum(dfGPSMatchSummary$gpsDuplicateMatchRows),
+  totalNoSensorProfileMatchRows = sum(dfGPSMatchSummary$noSensorProfileMatchRows),
+  totalNoDateRangeMatchRows = sum(dfGPSMatchSummary$noDateRangeMatchRows),
+  totalMissingObservationDateTimeRows = sum(
+    dfGPSMatchSummary$missingObservationDateTimeRows
+  ),
+  overallGPSMatchRate = sum(dfGPSMatchSummary$gpsMatchedRows) /
+    sum(dfGPSMatchSummary$totalRows),
+  stringsAsFactors = FALSE
+)
+
+write.csv(dfGPSStatistics, strFullGPSStatisticsName, row.names = FALSE)
 
 cat("Wrote GPS match summary to:", strFullGPSMatchSummaryName, "\n")
+cat("Wrote GPS duplicate match details to:", strFullGPSDuplicateMatchesName, "\n")
+cat("Wrote GPS unmatched row details to:", strFullGPSUnmatchedRowsName, "\n")
+cat("Wrote GPS statistics to:", strFullGPSStatisticsName, "\n")
 cat("Files processed:", length(fileList), "\n")
-cat("Total rows processed:", sum(dfGPSMatchSummary$totalRows), "\n")
-cat("Total GPS matched rows:", sum(dfGPSMatchSummary$gpsMatchedRows), "\n")
-cat("Total GPS unmatched rows:", sum(dfGPSMatchSummary$gpsUnmatchedRows), "\n")
-cat("Total GPS duplicate match rows:", sum(dfGPSMatchSummary$gpsDuplicateMatchRows), "\n")
+cat("Total rows processed:", dfGPSStatistics$totalRowsProcessed, "\n")
+cat("Total GPS matched rows:", dfGPSStatistics$totalGPSMatchedRows, "\n")
+cat("Total GPS unmatched rows:", dfGPSStatistics$totalGPSUnmatchedRows, "\n")
+cat("Total GPS duplicate match rows:", dfGPSStatistics$totalGPSDuplicateMatchRows, "\n")
 
 ############################################################
 ### Garbage Collector

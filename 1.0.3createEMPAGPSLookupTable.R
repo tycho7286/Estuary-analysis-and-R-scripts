@@ -16,11 +16,22 @@ strMembershipFilename <- "empaStationCoordinateMembership.csv"
 strClusterReviewFilename <- "empaStationCoordinateClustersEdited.csv"
 strLookupWriteFilename <- "empaSensorGPSLookup.csv"
 strDuplicateWriteFilename <- "empaSensorGPSLookupDuplicateDateRanges.csv"
+strUnusedCoordinateWriteFilename <- "empaSensorGPSLookupUnusedCoordinateEntries.csv"
+strLookupStatisticsWriteFilename <- "empaSensorGPSLookupStatistics.csv"
 
 strFullMembershipName <- file.path(strInPath, strMembershipFilename)
 strFullClusterReviewName <- file.path(strInPath, strClusterReviewFilename)
 strFullLookupWriteName <- file.path(strOutPath, strLookupWriteFilename)
 strFullDuplicateWriteName <- file.path(strOutPath, strDuplicateWriteFilename)
+strFullUnusedCoordinateWriteName <- file.path(strOutPath, strUnusedCoordinateWriteFilename)
+strFullLookupStatisticsWriteName <- file.path(strOutPath, strLookupStatisticsWriteFilename)
+
+############################################################
+### Script Metadata
+############################################################
+
+strLookupVersion <- "1.0"
+strLookupCreatedAt <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
 
 ############################################################
 ### Helper Functions
@@ -48,31 +59,47 @@ blankToNA <- function(x) {
 cleanLogicalField <- function(x, defaultValue = TRUE) {
   x <- as.character(x)
   x <- trimws(tolower(x))
-
+  
   output <- rep(defaultValue, length(x))
   output[x %in% c("true", "t", "yes", "y", "1")] <- TRUE
   output[x %in% c("false", "f", "no", "n", "0")] <- FALSE
-
+  
   output
 }
 
-### Parse EMPA ISO time strings as UTC POSIXct.
+### Parse EMPA time strings as UTC POSIXct.
 parseEMPATime <- function(timeValue) {
   timeValue <- blankToNA(timeValue)
-
-  parsedTime <- as.POSIXct(
-    timeValue,
+  outputTime <- as.POSIXct(rep(NA_character_, length(timeValue)), tz = "UTC")
+  
+  idxISO <- !is.na(timeValue) & grepl("T", timeValue)
+  outputTime[idxISO] <- as.POSIXct(
+    timeValue[idxISO],
     format = "%Y-%m-%dT%H:%M:%SZ",
     tz = "UTC"
   )
-
-  parsedTime
+  
+  idxSpace <- !is.na(timeValue) & is.na(outputTime)
+  outputTime[idxSpace] <- as.POSIXct(
+    timeValue[idxSpace],
+    format = "%Y-%m-%d %H:%M:%S",
+    tz = "UTC"
+  )
+  
+  idxDateOnly <- !is.na(timeValue) & is.na(outputTime)
+  outputTime[idxDateOnly] <- as.POSIXct(
+    timeValue[idxDateOnly],
+    format = "%Y-%m-%d",
+    tz = "UTC"
+  )
+  
+  outputTime
 }
 
 ### Stop with a clear message if required fields are missing.
 checkRequiredFields <- function(dfInput, requiredFields, dfName) {
   missingFields <- setdiff(requiredFields, names(dfInput))
-
+  
   if (length(missingFields) > 0) {
     stop(
       dfName,
@@ -87,8 +114,15 @@ addMissingColumn <- function(dfInput, columnName, defaultValue) {
   if (!columnName %in% names(dfInput)) {
     dfInput[[columnName]] <- defaultValue
   }
-
+  
   dfInput
+}
+
+### Format collapsed values for diagnostic files.
+collapseUniqueValues <- function(x) {
+  x <- unique(as.character(x))
+  x <- x[!is.na(x) & x != ""]
+  paste(x, collapse = " | ")
 }
 
 ############################################################
@@ -278,7 +312,17 @@ dfSensorGPSLookup <- dfMembership %>%
     by = c("estuaryname", "stationno", "uniqueCoordinateEntry")
   ) %>%
   filter(!is.na(finalLatitude), !is.na(finalLongitude)) %>%
+  mutate(
+    gpsLookupVersion = strLookupVersion,
+    gpsLookupCreatedAt = strLookupCreatedAt,
+    gpsMembershipSourceFile = strMembershipFilename,
+    gpsClusterReviewSourceFile = strClusterReviewFilename
+  ) %>%
   select(
+    gpsLookupVersion,
+    gpsLookupCreatedAt,
+    gpsMembershipSourceFile,
+    gpsClusterReviewSourceFile,
     estuaryname,
     stationno,
     sensorid,
@@ -317,6 +361,10 @@ dfSensorGPSLookup <- dfMembership %>%
 ############################################################
 
 finalLookupFields <- c(
+  "gpsLookupVersion",
+  "gpsLookupCreatedAt",
+  "gpsMembershipSourceFile",
+  "gpsClusterReviewSourceFile",
   "estuaryname",
   "stationno",
   "sensorid",
@@ -349,6 +397,17 @@ checkRequiredFields(
 dfSensorGPSLookup <- dfSensorGPSLookup[, finalLookupFields]
 
 ############################################################
+### Check for Unused Coordinate Entries
+############################################################
+
+dfUnusedCoordinateEntries <- dfCoordinateLookup %>%
+  anti_join(
+    dfSensorGPSLookup %>%
+      select(estuaryname, stationno, uniqueCoordinateEntry),
+    by = c("estuaryname", "stationno", "uniqueCoordinateEntry")
+  )
+
+############################################################
 ### Check for Overlapping Deployment Date Ranges
 ############################################################
 
@@ -358,7 +417,7 @@ lookupGroups <- dfSensorGPSLookup %>%
 
 for (i in seq_len(nrow(lookupGroups))) {
   currentGroup <- lookupGroups[i, ]
-
+  
   dfGroup <- dfSensorGPSLookup %>%
     filter(
       estuaryname == currentGroup$estuaryname,
@@ -367,33 +426,37 @@ for (i in seq_len(nrow(lookupGroups))) {
       profile == currentGroup$profile
     ) %>%
     arrange(gpsStartDate, gpsEndDate, uniqueCoordinateEntry)
-
+  
   if (nrow(dfGroup) <= 1) {
     next
   }
-
+  
   for (j in seq_len(nrow(dfGroup) - 1)) {
     for (k in (j + 1):nrow(dfGroup)) {
       startOne <- dfGroup$gpsStartDate[j]
       startTwo <- dfGroup$gpsStartDate[k]
       endOne <- dfGroup$gpsEndDate[j]
       endTwo <- dfGroup$gpsEndDate[k]
-
+      
       if (is.na(startOne) || is.na(startTwo)) {
         next
       }
-
+      
       if (is.na(endOne)) {
         endOne <- as.POSIXct("9999-12-31", tz = "UTC")
       }
-
+      
       if (is.na(endTwo)) {
         endTwo <- as.POSIXct("9999-12-31", tz = "UTC")
       }
-
+      
       rangesOverlap <- startOne <= endTwo & startTwo <= endOne
-
+      
       if (rangesOverlap) {
+        overlapStart <- max(startOne, startTwo)
+        overlapEnd <- min(endOne, endTwo)
+        overlapDays <- as.numeric(difftime(overlapEnd, overlapStart, units = "days"))
+        
         dfOverlapList[[length(dfOverlapList) + 1]] <- data.frame(
           estuaryname = currentGroup$estuaryname,
           stationno = currentGroup$stationno,
@@ -405,6 +468,26 @@ for (i in seq_len(nrow(lookupGroups))) {
           firstEndDate = dfGroup$gpsEndDate[j],
           secondStartDate = dfGroup$gpsStartDate[k],
           secondEndDate = dfGroup$gpsEndDate[k],
+          overlapStart = overlapStart,
+          overlapEnd = overlapEnd,
+          overlapDays = overlapDays,
+          firstFinalLatitude = dfGroup$finalLatitude[j],
+          firstFinalLongitude = dfGroup$finalLongitude[j],
+          secondFinalLatitude = dfGroup$finalLatitude[k],
+          secondFinalLongitude = dfGroup$finalLongitude[k],
+          sameFinalCoordinate = isTRUE(all.equal(
+            c(dfGroup$finalLatitude[j], dfGroup$finalLongitude[j]),
+            c(dfGroup$finalLatitude[k], dfGroup$finalLongitude[k]),
+            tolerance = 1e-8
+          )),
+          firstCoordinateGroup = dfGroup$finalCoordinateGroup[j],
+          secondCoordinateGroup = dfGroup$finalCoordinateGroup[k],
+          sameCoordinateGroup = dfGroup$finalCoordinateGroup[j] ==
+            dfGroup$finalCoordinateGroup[k],
+          firstCombineToSinglePin = dfGroup$combineToSinglePin[j],
+          secondCombineToSinglePin = dfGroup$combineToSinglePin[k],
+          firstReviewNotes = dfGroup$gpsReviewNotes[j],
+          secondReviewNotes = dfGroup$gpsReviewNotes[k],
           stringsAsFactors = FALSE
         )
       }
@@ -415,16 +498,41 @@ for (i in seq_len(nrow(lookupGroups))) {
 dfOverlapCheck <- bind_rows(dfOverlapList)
 
 ############################################################
+### Create Lookup Statistics
+############################################################
+
+dfLookupStatistics <- data.frame(
+  gpsLookupVersion = strLookupVersion,
+  gpsLookupCreatedAt = strLookupCreatedAt,
+  membershipRowsRead = nrow(dfMembership),
+  clusterRowsRead = nrow(dfClusters),
+  coordinateLookupRows = nrow(dfCoordinateLookup),
+  sensorGPSLookupRows = nrow(dfSensorGPSLookup),
+  unusedCoordinateEntries = nrow(dfUnusedCoordinateEntries),
+  overlappingDateRangePairs = nrow(dfOverlapCheck),
+  lookupRowsWithMissingStartDate = sum(is.na(dfSensorGPSLookup$gpsStartDate)),
+  lookupRowsWithMissingEndDate = sum(is.na(dfSensorGPSLookup$gpsEndDate)),
+  distinctEstuaries = n_distinct(dfSensorGPSLookup$estuaryname),
+  distinctSensors = n_distinct(dfSensorGPSLookup$sensorid),
+  stringsAsFactors = FALSE
+)
+
+############################################################
 ### Write Lookup and Diagnostics
 ############################################################
 
 write.csv(dfSensorGPSLookup, strFullLookupWriteName, row.names = FALSE)
 write.csv(dfOverlapCheck, strFullDuplicateWriteName, row.names = FALSE)
+write.csv(dfUnusedCoordinateEntries, strFullUnusedCoordinateWriteName, row.names = FALSE)
+write.csv(dfLookupStatistics, strFullLookupStatisticsWriteName, row.names = FALSE)
 
 cat("Wrote GPS lookup table to:", strFullLookupWriteName, "\n")
 cat("Rows written:", nrow(dfSensorGPSLookup), "\n")
 cat("Wrote duplicate date range diagnostic to:", strFullDuplicateWriteName, "\n")
 cat("Overlapping date range pairs found:", nrow(dfOverlapCheck), "\n")
+cat("Wrote unused coordinate entry diagnostic to:", strFullUnusedCoordinateWriteName, "\n")
+cat("Unused coordinate entries found:", nrow(dfUnusedCoordinateEntries), "\n")
+cat("Wrote lookup statistics to:", strFullLookupStatisticsWriteName, "\n")
 
 if (nrow(dfOverlapCheck) > 0) {
   print(dfOverlapCheck)
