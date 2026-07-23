@@ -20,6 +20,7 @@ strMetadataPath <- "D:/Google/School/2026Summer-BML-UCDGAP/Data/metadata"
 
 strReadFilename <- "datasetWorkingCopy.rds"
 strWriteFilename <- "datasetWorkingCopy.rds"
+strPrefilteredBackupFilename <- "prefilteredWorkingDataset.rds"
 strSummaryFilename <- "datasetQCFilterSummary.csv"
 strStatisticsFilename <- "datasetQCFilterStatistics.csv"
 strMissingQCReportFilename <- "datasetQCMissingFlagEstuaryReport.csv"
@@ -27,6 +28,10 @@ strFailedRowsFilename <- "qcFilterFailedRows.csv"
 
 strFullReadName <- file.path(strInPath, strReadFilename)
 strFullWriteName <- file.path(strOutPath, strWriteFilename)
+strFullPrefilteredBackupName <- file.path(
+  strOutPath,
+  strPrefilteredBackupFilename
+)
 strFullSummaryName <- file.path(strMetadataPath, strSummaryFilename)
 strFullStatisticsName <- file.path(strMetadataPath, strStatisticsFilename)
 strFullMissingQCReportName <- file.path(strMetadataPath, strMissingQCReportFilename)
@@ -104,6 +109,30 @@ if (!file.exists(strFullReadName)) {
 
 dir.create(strOutPath, recursive = TRUE, showWarnings = FALSE)
 dir.create(strMetadataPath, recursive = TRUE, showWarnings = FALSE)
+
+############################################################
+### Back Up Working Dataset Before Filtering
+############################################################
+
+backupCreated <- file.copy(
+  from = strFullReadName,
+  to = strFullPrefilteredBackupName,
+  overwrite = TRUE
+)
+
+if (!backupCreated) {
+  stop(
+    "Could not create the pre-filter backup at: ",
+    strFullPrefilteredBackupName
+  )
+}
+
+cat(
+  "Copied the unfiltered working dataset to: ",
+  strFullPrefilteredBackupName,
+  "\n",
+  sep = ""
+)
 
 cat("Reading dataset from: ", strFullReadName, "\n", sep = "")
 estuaryQCFiltered <- readRDS(strFullReadName)

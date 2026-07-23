@@ -31,7 +31,9 @@ strStation <- "all"
 strProfile <- "all"
 strSeason <- "all"
 
-intHistogramBins <- 30
+### Absolute bin widths keep every group's histogram and FP directly comparable.
+dblTemperatureBinWidth <- 0.5
+dblTemperatureRangeBinWidth <- 0.5
 intImageWidth <- 8
 intImageHeight <- 3
 intImageDpi <- 600
@@ -101,7 +103,12 @@ saveSummaryHistogram <- function(
 
   plotHistogram <- ggplot(dfPlot, aes(x = .data[[strColumnName]])) +
     geom_histogram(
-      bins = intHistogramBins,
+      binwidth = if (strColumnName == "tempRange") {
+        dblTemperatureRangeBinWidth
+      } else {
+        dblTemperatureBinWidth
+      },
+      boundary = 0,
       color = "white",
       fill = "steelblue"
     ) +
@@ -169,7 +176,12 @@ saveSummaryFrequencyPolygon <- function(
 
   plotFrequencyPolygon <- ggplot(dfPlot, aes(x = .data[[strColumnName]])) +
     geom_freqpoly(
-      bins = intHistogramBins,
+      binwidth = if (strColumnName == "tempRange") {
+        dblTemperatureRangeBinWidth
+      } else {
+        dblTemperatureBinWidth
+      },
+      boundary = 0,
       linewidth = 0.8,
       color = "steelblue"
     ) +
@@ -227,12 +239,14 @@ saveMeanHistogramFrequencyCheck <- function(
 
   plotMeanCheck <- ggplot(dfPlot, aes(x = meanTemp)) +
     geom_histogram(
-      bins = intHistogramBins,
+      binwidth = dblTemperatureBinWidth,
+      boundary = 0,
       color = "white",
       fill = "grey70"
     ) +
     geom_freqpoly(
-      bins = intHistogramBins,
+      binwidth = dblTemperatureBinWidth,
+      boundary = 0,
       linewidth = 0.8,
       color = "steelblue"
     ) +
@@ -921,7 +935,12 @@ for (i in seq_len(nrow(dfPlotGroups))) {
     theme_minimal()
 
   plotRangeFrequencyPolygon <- ggplot(dfWindowSummary, aes(x = tempRange)) +
-    geom_freqpoly(bins = intHistogramBins, linewidth = 0.8, color = "steelblue") +
+    geom_freqpoly(
+      binwidth = dblTemperatureRangeBinWidth,
+      boundary = 0,
+      linewidth = 0.8,
+      color = "steelblue"
+    ) +
     coord_cartesian(xlim = temperatureRangeLimits) +
     labs(
       title = paste0(strGroupEstuary, ": Temperature Range Frequency Polygon"),
@@ -937,7 +956,12 @@ for (i in seq_len(nrow(dfPlotGroups))) {
     theme_minimal()
 
   plotMeanFrequencyPolygon <- ggplot(dfWindowSummary, aes(x = meanTemp)) +
-    geom_freqpoly(bins = intHistogramBins, linewidth = 0.8, color = "steelblue") +
+    geom_freqpoly(
+      binwidth = dblTemperatureBinWidth,
+      boundary = 0,
+      linewidth = 0.8,
+      color = "steelblue"
+    ) +
     coord_cartesian(xlim = temperatureLimits) +
     labs(
       title = paste0(strGroupEstuary, ": Mean Temperature Frequency Polygon"),
